@@ -105,7 +105,9 @@ class MainActivity : Activity(), SensorEventListener, LocationListener {
         accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
         gyroscope = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
         locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
-        val scroll = ScrollView(this).apply { fillViewport = true }
+        val scroll = ScrollView(this).apply {
+    isFillViewport = true
+}
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(28, 36, 28, 48)
