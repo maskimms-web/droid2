@@ -10,6 +10,8 @@ import android.graphics.Color
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.RectF
+import android.graphics.drawable.GradientDrawable
+import android.content.res.ColorStateList
 import android.view.View
 import kotlin.math.cos
 import kotlin.math.sin
@@ -39,6 +41,11 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.Spinner
 import android.widget.TextView
+import org.osmdroid.config.Configuration
+import org.osmdroid.tileprovider.tilesource.TileSourceFactory
+import org.osmdroid.util.GeoPoint
+import org.osmdroid.views.MapView
+import org.osmdroid.views.overlay.Marker
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
@@ -61,7 +68,11 @@ class MainActivity : Activity(), SensorEventListener, LocationListener {
     private var calibrationCount = 0
     private var calibrationSum = 0.0
     private var calibrationActive = false
+    private var lastGpsFixMs = 0L
     private var lastNavSpeedMs = 0L
+    private lateinit var mapView: MapView
+    private lateinit var carMarker: Marker
+    private var followCar = true
     private lateinit var navStatus: TextView
     private lateinit var navCoordinates: TextView
     private lateinit var navButton: Button
@@ -88,11 +99,13 @@ class MainActivity : Activity(), SensorEventListener, LocationListener {
     private lateinit var button: Button
     private var devices: List<BluetoothDevice> = emptyList()
     private val uuid = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
-    private val cyan = Color.rgb(56, 189, 248)
-    private val gray = Color.rgb(170, 184, 200)
+    private val cyan = Color.rgb(221, 49, 48) // Golf Mk5 red illumination
+    private val gray = Color.rgb(166, 175, 184)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.statusBarColor = Color.rgb(8, 10, 13)
+        window.navigationBarColor = Color.rgb(8, 10, 13)
         distanceKm = savedInstanceState?.getDouble("distanceKm") ?: 0.0
         navLat = if (savedInstanceState?.containsKey("navLat") == true) savedInstanceState.getDouble("navLat") else null
         navLon = if (savedInstanceState?.containsKey("navLon") == true) savedInstanceState.getDouble("navLon") else null
@@ -105,25 +118,40 @@ class MainActivity : Activity(), SensorEventListener, LocationListener {
         accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
         gyroscope = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
         locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
-        val scroll = ScrollView(this).apply {
-    isFillViewport = true
-}
+        Configuration.getInstance().userAgentValue = packageName
+        val scroll = ScrollView(this).apply { isFillViewport = true }
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(28, 36, 28, 48)
-            setBackgroundColor(Color.rgb(16, 24, 32))
+            setBackgroundColor(Color.rgb(9, 12, 17))
+        }
+        fun clusterButton(title: String, action: () -> Unit): Button = Button(this).apply {
+            text = title
+            isAllCaps = false
+            setTextColor(Color.rgb(242, 238, 235))
+            textSize = 14f
+            background = GradientDrawable().apply {
+                setColor(Color.rgb(28, 31, 38))
+                setStroke(2, Color.rgb(150, 38, 43))
+                cornerRadius = 14f * resources.displayMetrics.density
+            }
+            backgroundTintList = null
+            setPadding(14, 12, 14, 12)
+            setOnClickListener { action() }
         }
         fun label(t: String, size: Float, color: Int = Color.WHITE): TextView = TextView(this).apply {
             text = t; textSize = size; setTextColor(color)
         }
-        root.addView(label("OBD SPEED", 26f, cyan).apply { typeface = Typeface.DEFAULT_BOLD })
+        root.addView(label("GOLF V  •  OBD NAVIGATOR", 25f, cyan).apply { typeface = Typeface.DEFAULT_BOLD })
         root.addView(label("Bluetooth Classic · ELM327", 14f, gray))
         root.addView(label("Спарений адаптер", 16f).apply { setPadding(0, 28, 0, 6) })
-        spinner = Spinner(this)
+        spinner = Spinner(this).apply {
+            backgroundTintList = ColorStateList.valueOf(Color.rgb(214, 55, 54))
+        }
         root.addView(spinner)
         val buttons = LinearLayout(this)
-        val refresh = Button(this).apply { text = "Оновити"; setOnClickListener { ensurePermission() } }
-        button = Button(this).apply { text = "Підключити"; setOnClickListener { if (active.get()) stop() else connectSelected() } }
+        val refresh = clusterButton("Оновити") { ensurePermission() }
+        button = clusterButton("Підключити") { if (active.get()) stop() else connectSelected() }
         buttons.addView(refresh, LinearLayout.LayoutParams(0, -2, 1f))
         buttons.addView(button, LinearLayout.LayoutParams(0, -2, 1f))
         root.addView(buttons)
@@ -138,9 +166,7 @@ class MainActivity : Activity(), SensorEventListener, LocationListener {
         distanceView = label("0,000 км", 30f).apply { gravity = Gravity.CENTER }
         root.addView(distanceView)
         updateDistanceView()
-        root.addView(Button(this).apply {
-            text = "Скинути відстань"
-            setOnClickListener {
+        root.addView(clusterButton("Скинути відстань") {
                 synchronized(this@MainActivity) {
                     distanceKm = 0.0
                     previousSpeed = null
@@ -153,14 +179,33 @@ class MainActivity : Activity(), SensorEventListener, LocationListener {
         root.addView(status)
         detail = label("Спочатку спаруйте ELM327 у налаштуваннях Android", 14f, gray)
         root.addView(detail)
-        root.addView(label("НАВІГАЦІЯ БЕЗ GPS · ЕКСПЕРИМЕНТ", 17f, cyan).apply {
+        root.addView(label("НАВІГАЦІЯ GPS / OBD · ЕКСПЕРИМЕНТ", 17f, cyan).apply {
             typeface = Typeface.DEFAULT_BOLD; setPadding(0, 30, 0, 10)
         })
         navStatus = label("Очікування початкової GPS-позиції", 16f, gray)
         navCoordinates = label("Координати: —", 15f, gray)
         root.addView(navStatus)
         root.addView(navCoordinates)
-        navButton = Button(this).apply { text = "Почати навігацію"; setOnClickListener { toggleNavigation() } }
+        root.addView(label("КАРТА OPENSTREETMAP", 16f, cyan).apply { setPadding(0, 18, 0, 8) })
+        mapView = MapView(this).apply {
+            setTileSource(TileSourceFactory.MAPNIK)
+            setMultiTouchControls(true)
+            controller.setZoom(16.0)
+            setUseDataConnection(true)
+        }
+        carMarker = Marker(mapView).apply {
+            title = "Автомобіль · розрахункова позиція"
+            setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
+        }
+        mapView.overlays.add(carMarker)
+        root.addView(mapView, LinearLayout.LayoutParams(-1, (resources.displayMetrics.widthPixels * 0.85f).toInt().coerceIn(320, 850)))
+        root.addView(clusterButton("Центрувати карту на автомобілі") {
+                followCar = true
+                updateMapPosition()
+            }
+        })
+        root.addView(label("Карта потребує інтернету для нових ділянок. Без мережі можуть відображатися лише кешовані тайли. Маркер показує оцінку позиції, не гарантовані координати.", 12f, gray))
+        navButton = clusterButton("Почати навігацію") { toggleNavigation() }
         root.addView(navButton)
         if (navigationRunning) {
             navButton.text = "Продовжити навігацію"
@@ -206,10 +251,12 @@ class MainActivity : Activity(), SensorEventListener, LocationListener {
         accelerometer?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
         gyroscope?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
         startLocationUpdates()
+        mapView.onResume()
     }
 
     override fun onPause() {
         sensorManager.unregisterListener(this)
+        mapView.onPause()
         stopLocationUpdates()
         if (navigationRunning && !navigationPaused) pauseNavigation()
         super.onPause()
@@ -225,7 +272,7 @@ class MainActivity : Activity(), SensorEventListener, LocationListener {
                     gyroBiasZ = calibrationSum / calibrationCount
                     calibrationActive = false
                     lastGyroNs = event.timestamp
-                    navStatus.text = "Навігація активна · оцінка положення"
+                    navStatus.text = if (lastGpsFixMs != 0L && SystemClock.elapsedRealtime() - lastGpsFixMs < 5000L) "GPS-навігація активна" else "Розрахункова навігація · потрібні OBD та напрямок"
                 }
             } else if (navigationRunning && !navigationPaused && lastGyroNs > 0L) {
                 val dt = (event.timestamp - lastGyroNs) / 1e9
@@ -420,12 +467,11 @@ class MainActivity : Activity(), SensorEventListener, LocationListener {
 
     private fun toggleNavigation() {
         if (!navigationRunning) {
-            if (navLat == null || navLon == null || !headingReady) {
-                navStatus.text = "Потрібна GPS-позиція та напрямок руху перед втратою GPS"
+            if (navLat == null || navLon == null) {
+                navStatus.text = "Очікуємо початкові GPS-координати"
                 ensureLocationPermission()
                 return
             }
-            if (gyroscope == null) { navStatus.text = "Гіроскоп недоступний"; return }
             navigationRunning = true
             resumeNavigation()
         } else if (!navigationPaused) {
@@ -452,13 +498,15 @@ class MainActivity : Activity(), SensorEventListener, LocationListener {
         calibrationCount = 0
         calibrationActive = true
         navButton.text = "Пауза навігації"
-        navStatus.text = "Калібрування гіроскопа · автомобіль має стояти"
+        navStatus.text = "GPS активний; калібрування гіроскопа · авто має стояти"
     }
 
     private fun advanceNavigation(kmh: Int, nowMs: Long) {
         val previous = lastNavSpeedMs
         lastNavSpeedMs = nowMs
         if (!navigationRunning || navigationPaused || calibrationActive || !headingReady) return
+        // Fresh GPS coordinates take precedence over OBD dead reckoning.
+        if (lastGpsFixMs != 0L && nowMs - lastGpsFixMs < 5000L) return
         val lat = navLat ?: return
         val lon = navLon ?: return
         val dt = nowMs - previous
@@ -477,6 +525,18 @@ class MainActivity : Activity(), SensorEventListener, LocationListener {
         val lat = navLat ?: return
         val lon = navLon ?: return
         navCoordinates.text = String.format(Locale.US, "Оцінка: %.6f, %.6f · напрям %.0f°", lat, lon, navHeading)
+        updateMapPosition()
+    }
+
+    private fun updateMapPosition() {
+        val lat = navLat ?: return
+        val lon = navLon ?: return
+        if (!::mapView.isInitialized) return
+        val point = GeoPoint(lat, lon)
+        carMarker.position = point
+        carMarker.rotation = navHeading.toFloat()
+        if (followCar) mapView.controller.animateTo(point)
+        mapView.invalidate()
     }
 
     private fun ensureLocationPermission() {
@@ -498,9 +558,9 @@ class MainActivity : Activity(), SensorEventListener, LocationListener {
 
     override fun onLocationChanged(location: Location) {
         if (location.accuracy > 35f) return
-        // Don't silently teleport while navigating: GPS correction is deliberately disabled
-        // in this prototype until a proper fusion/reconciliation algorithm is implemented.
-        if (navigationRunning) return
+        // While paused, do not move the estimated position.
+        if (navigationRunning && navigationPaused) return
+        lastGpsFixMs = SystemClock.elapsedRealtime()
         navLat = location.latitude
         navLon = location.longitude
         if (location.hasBearing() && location.speed > 2f) {
@@ -508,7 +568,7 @@ class MainActivity : Activity(), SensorEventListener, LocationListener {
             headingReady = true
         }
         updateNavText()
-        navStatus.text = if (headingReady) "GPS-точка та напрямок готові" else "GPS-точка є · проїдьте трохи для визначення напрямку"
+        navStatus.text = if (navigationRunning) "GPS-навігація активна · OBD не обов’язковий" else if (headingReady) "GPS-точка та напрямок готові" else "GPS-точка є · проїдьте трохи для визначення напрямку"
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -529,7 +589,7 @@ class MainActivity : Activity(), SensorEventListener, LocationListener {
         try { socket?.close() } catch (_: Exception) {}
         worker?.interrupt()
     }
-    override fun onDestroy() { stop(); super.onDestroy() }
+    override fun onDestroy() { stop(); mapView.onDetach(); super.onDestroy() }
 }
 
 /**
@@ -543,10 +603,10 @@ class GolfSpeedometerView(context: android.content.Context) : View(context) {
     private val maxSpeed = 260
     private val startAngle = 135f
     private val sweepAngle = 270f
-    private val face = Color.rgb(12, 16, 22)
+    private val face = Color.rgb(10, 12, 16)
     private val white = Color.rgb(234, 238, 243)
-    private val red = Color.rgb(220, 38, 48)
-    private val muted = Color.rgb(112, 125, 139)
+    private val red = Color.rgb(230, 42, 48)
+    private val muted = Color.rgb(156, 164, 172)
 
     fun setSpeed(value: Int?) {
         currentSpeed = value
@@ -567,12 +627,12 @@ class GolfSpeedometerView(context: android.content.Context) : View(context) {
         canvas.drawCircle(cx, cy, r, paint)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = size * 0.013f
-        paint.color = Color.rgb(59, 68, 78)
+        paint.color = Color.rgb(81, 36, 42)
         canvas.drawCircle(cx, cy, r * 0.985f, paint)
 
         val arc = RectF(cx-r*0.88f, cy-r*0.88f, cx+r*0.88f, cy+r*0.88f)
         paint.strokeWidth = size * 0.014f
-        paint.color = Color.rgb(225, 229, 235)
+        paint.color = Color.rgb(239, 234, 229)
         canvas.drawArc(arc, startAngle, sweepAngle, false, paint)
         paint.color = red
         canvas.drawArc(arc, startAngle + sweepAngle*220/maxSpeed, sweepAngle*40/maxSpeed, false, paint)
@@ -603,7 +663,7 @@ class GolfSpeedometerView(context: android.content.Context) : View(context) {
         paint.textAlign = Paint.Align.CENTER
         paint.typeface = Typeface.create("sans-serif", Typeface.NORMAL)
         paint.textSize = size*0.052f
-        paint.color = muted
+        paint.color = Color.rgb(205, 62, 58)
         canvas.drawText("km/h", cx, cy-r*0.26f, paint)
 
         val shown = currentSpeed
@@ -619,15 +679,15 @@ class GolfSpeedometerView(context: android.content.Context) : View(context) {
             paint
         )
         paint.style = Paint.Style.FILL
-        paint.color = Color.rgb(205, 211, 218)
+        paint.color = Color.rgb(210, 208, 207)
         canvas.drawCircle(cx, cy, size*0.028f, paint)
         paint.color = red
         canvas.drawCircle(cx, cy, size*0.015f, paint)
 
-        paint.color = Color.rgb(8, 11, 15)
+        paint.color = Color.rgb(5, 7, 9)
         val box = RectF(cx-r*0.30f, cy+r*0.30f, cx+r*0.30f, cy+r*0.56f)
         canvas.drawRoundRect(box, size*0.014f, size*0.014f, paint)
-        paint.color = Color.rgb(235, 241, 245)
+        paint.color = Color.rgb(242, 62, 57)
         paint.typeface = Typeface.create("monospace", Typeface.BOLD)
         paint.textSize = size*0.10f
         val digits = shown?.toString() ?: "---"

@@ -33,3 +33,18 @@ GitHub Actions використовує Java 17, Android SDK 35 та Gradle 8.9.
 - Переміщення автомобіля під час паузи НЕ враховується. Після такого переміщення потрібна нова GPS-фіксація/повторний старт.
 - У цій версії **немає офлайн-карти, маршрутизації, map matching, відновлення GPS-корекції та надійної фонової навігації**. Це прототип координатного Dead Reckoning, а не готовий навігатор.
 - Під час втрати OBD або призупинення Android-активності навігація не інтегрує час простою.
+
+
+## GPS without ELM327 (update)
+- Start navigation after receiving initial GPS coordinates, even without Bluetooth/OBD.
+- Fresh GPS fixes update coordinates while navigation is active; pause freezes position.
+- If no GPS fix arrives for 5 seconds, OBD speed + calibrated gyro can estimate movement, provided a GPS bearing was obtained.
+- If neither GPS nor OBD is available, position cannot be updated reliably.
+- This is an experimental prototype; returning GPS may cause a visible position jump, and gyroscope yaw assumes a fixed upright phone mounting orientation.
+
+## Карта OpenStreetMap
+Додано osmdroid 6.1.20, карту в екрані навігації, маркер розрахункової позиції та кнопку центрування. Для нових тайлів потрібен інтернет; кеш тайлів не є повноцінною офлайн-картою. Для навігації без GPS координати приблизні й накопичують похибку.
+
+## Golf 5 dashboard theme
+
+The interface uses a near-black instrument panel background, warm white speedometer markings, Golf Mk5-inspired red needle/lighting, red section headers, and charcoal buttons with red outlines. OpenStreetMap remains in its normal map tile colors for readability. The theme is inspired by the dashboard, not a reproduction of Volkswagen branding.
